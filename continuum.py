@@ -13,6 +13,7 @@ __all__ = [
     "normalize_individual_visits"]
 
 import numpy as np
+from astropy.io import fits
 
 
 def _continuum_design_matrix(dispersion, L, order):
