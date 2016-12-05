@@ -36,14 +36,20 @@ THREADS = 8
 PICKLE_PROTOCOL = -1
 ORIGINAL_DATA_DIR = "/media/My Book/surveys/apogee/dr14/spectra/"
 CANNON_DATA_DIR = "/media/My Book/surveys/apogee/dr14/tc-normalized-spectra/"
+CANNON_MODEL_DIR = "/media/My Book/surveys/apogee/dr14/models/"
 
-# The TRAINING_SET_CATALOG_PATH must be a table containing:
+# The labelled_set_path must be a table containing:
 #   - telescope
 #   - location_id
 #   - apogee_id
 # so that the filename can be reconstructed, and:
 #   - the training set labels (whatever you want to train on).
-TRAINING_SET_CATALOG_PATH = "dr14-training-set.fits"
+LABELLED_SET_PATH = "apogee-dr14-giants-training-set.fits"
+
+# The label names to use in the model.
+LABEL_NAMES = ("TEFF", "LOGG", "FEH", "MG_H", "AL_H")
+MODEL_ORDER = 2
+MODEL_REGULARIZATION = 0
 
 
 #------------------------------------------------------#
@@ -132,26 +138,70 @@ pool.close()
 pool.join()
 
 # TODO Do something with the failures in `result`?
-
-
+# TODO Save the dispersion from one spectrum into CANNON_DATA_DIR/dispersion.pkl
+# TODO: Set P as the number of pixels from the dispersion.
 
 #-------------------------------------------------------#
 # 2. Construct a training set from the stacked spectra. #
 #-------------------------------------------------------#
+model_name = "apogee-dr14-giants"
 
+labelled_set = Table.read(LABELLED_SET_PATH)
+N = len(labelled_set)
+P = 8575
+
+with open(os.path.join(CANNON_DATA_DIR, "dispersion.pkl"), "rb") as fp:
+    dispersion = pickle.load(fp)
+
+normalized_flux = np.zeros((N, P), dtype=float)
+normalized_ivar = np.zeros((N, P), dtype=float)
+
+for i, row in enumerate(labelled_set):
+
+    filename = os.path.join(
+        CANNON_DATA_DIR, 
+        row["TELESCOPE"],
+        row["LOCATION_ID"],
+        "{}.pkl".format(row["APOGEE_ID"]))
+    
+    with open(filename, "rb") as fp:
+        flux, ivar = pickle.load(fp)
+
+    normalized_flux[i, :] = flux
+    normalized_ivar[i, :] = ivar
+
+# TODO: Cache the normalized_flux and normalized_ivar into a single file?
 
 
 #-------------------#
 # 3. Train a model. #
 #-------------------#
 
+model = tc.L1RegularizedCannonModel(labelled_set, normalized_flux,
+    normalized_ivar, dispersion, threads=THREADS)
+
+model.vectorizer = tc.vectorizer.NormalizedPolynomialVectorizer(labelled_set, 
+    tc.vectorizer.polynomial.terminator(LABEL_NAMES, MODEL_ORDER))
+
+model.regularization = MODEL_REGULARIZATION
+model.s2 = 0
+
+model.train()
+model._set_s2_by_hogg_heuristic()
+
+model.save(os.path.join(CANNON_MODEL_DIR, "{}.pkl".format(model_name)),
+    include_training_data=True, overwrite=True)
+
+# TODO: Make some one-to-one plots to show sensible ness.
+# TODO: Automatically run crossvalidation?
 
 
+#---------------------------------------------------#
+# 4. Generate a script to test the stacked spectra. #
+#---------------------------------------------------#
 
-# 4. Train a model.
 
-# 5. Test a model on the individual visit spectra (stacked and unstacked).
+#-----------------------------------------------------------------#
+# 5. Make travel arrangements to accept Nobel Prize in Stockholm. # 
+#-----------------------------------------------------------------#
 
-# 6. Collect test results into a single file.
-
-# 7. Make arrangements to accept Nobel Prize in Stockholm.
