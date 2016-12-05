@@ -31,7 +31,6 @@ logger.addHandler(handler)
 #------------------------------------------------------#
 # 0. Download all the data and set required variables. #
 #------------------------------------------------------#
-DEBUG = True
 THREADS = 8
 PICKLE_PROTOCOL = -1
 ORIGINAL_DATA_DIR = "/media/My Book/surveys/apogee/dr14/spectra/"
@@ -45,6 +44,7 @@ CANNON_MODEL_DIR = "/media/My Book/surveys/apogee/dr14/models/"
 # so that the filename can be reconstructed, and:
 #   - the training set labels (whatever you want to train on).
 LABELLED_SET_PATH = "apogee-dr14-giants-training-set.fits"
+MODEL_NAME = "apogee-dr14-giants"
 
 # The label names to use in the model.
 LABEL_NAMES = ("TEFF", "LOGG", "FEH", "MG_H", "AL_H")
@@ -81,10 +81,11 @@ def _process_normalization(input_path):
         The local path of an apStar spectrum.
 
     :returns:
-        A two-length tuple indicating: (1) whether the normalization was
-        successful, and (2) the input_path provided. If `None` is provided in
-        (1), it is because the output file already exists and we were not
-        instructed to clobber it.
+        A three-length tuple indicating: (1) whether the normalization was
+        successful, (2) the `input_path`, and (3) the `output_path` if the
+        normalization was successful. If `None` is provided in (1), it is 
+        because the output file already exists and we were not instructed 
+        to clobber it.
     """
 
     # Generate the output path for The Cannon-normalized spctra.
@@ -101,7 +102,7 @@ def _process_normalization(input_path):
     # Check if this output file already exists.
     if os.path.exists(output_path) and not clobber_normalization:
         logger.info("Skipping normalization of {}..".format(input_path))
-        return (None, input_path)
+        return (None, input_path, output_path)
 
     try:
         stacked, visits, metadata = continuum.normalize_individual_visits(
@@ -109,7 +110,7 @@ def _process_normalization(input_path):
 
     except:
         logger.exception("Normalization failed on {}".format(input_path))
-        return (False, input_path)
+        return (False, input_path, None)
 
     metadata.update(APOGEE_ID=apogee_id)
 
@@ -127,13 +128,14 @@ def _process_normalization(input_path):
 
     logger.info("Normalized spectra in {} successfully".format(input_path))
 
-    return (True, input_path)
+    return (True, input_path, output_path)
 
 # Process the normalization in parallel.
 logger.info("Initializing {} threads to perform pseudo-continuum-normalization"\
     .format(THREADS))
 pool = mp.Pool(THREADS)
-result = pool.map_async(_process_normalization, individual_visit_paths).get()
+normalized_result = \
+    pool.map_async(_process_normalization, individual_visit_paths).get()
 pool.close()
 pool.join()
 
@@ -141,11 +143,11 @@ pool.join()
 # TODO Save the dispersion from one spectrum into CANNON_DATA_DIR/dispersion.pkl
 # TODO: Set P as the number of pixels from the dispersion.
 
+
 #-------------------------------------------------------#
 # 2. Construct a training set from the stacked spectra. #
 #-------------------------------------------------------#
-model_name = "apogee-dr14-giants"
-
+clobber_model = True
 labelled_set = Table.read(LABELLED_SET_PATH)
 N = len(labelled_set)
 P = 8575
@@ -189,8 +191,8 @@ model.s2 = 0
 model.train()
 model._set_s2_by_hogg_heuristic()
 
-model.save(os.path.join(CANNON_MODEL_DIR, "{}.pkl".format(model_name)),
-    include_training_data=True, overwrite=True)
+model_filename = os.path.join(CANNON_MODEL_DIR, "{}.pkl".format(MODEL_NAME))
+model.save(model_filename, include_training_data=True, overwrite=clobber_model)
 
 # TODO: Make some one-to-one plots to show sensible ness.
 # TODO: Automatically run crossvalidation?
@@ -199,7 +201,18 @@ model.save(os.path.join(CANNON_MODEL_DIR, "{}.pkl".format(model_name)),
 #---------------------------------------------------#
 # 4. Generate a script to test the stacked spectra. #
 #---------------------------------------------------#
+stacked_spectra = [o for (s, i, o) in normalized_result if s in (None, True)]
+stacked_spectra_path = os.path.join(CANNON_DATA_DIR, "stacked-spectra.list")
+with open(stacked_spectra_path, "w") as fp:
+    fp.write("\n".join(stacked_spectra))
 
+logger.info(
+    "The following command will perform the test step on all stacked spectra:"\
+    '\ttc fit "{model_filename}" --from-filename "{spectrum_list}" -t {threads}'\
+    .format(model_filename=model_filename, spectrum_list=stacked_spectra_path,
+        threads=THREADS))
+
+# TODO: initial positions?
 
 #-----------------------------------------------------------------#
 # 5. Make travel arrangements to accept Nobel Prize in Stockholm. # 
