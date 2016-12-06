@@ -131,18 +131,40 @@ def _process_normalization(input_path):
     return (True, input_path, output_path)
 
 # Process the normalization in parallel.
-logger.info("Initializing {} threads to perform pseudo-continuum-normalization"\
-    .format(THREADS))
+logger.info(
+    "Starting {} threads to perform pseudo-continuum-normalization of {} stars"\
+    .format(THREADS, N))
+
 pool = mp.Pool(THREADS)
 normalized_result = \
     pool.map_async(_process_normalization, individual_visit_paths).get()
 pool.close()
 pool.join()
 
-# TODO Do something with the failures in `result`?
-# TODO Save the dispersion from one spectrum into CANNON_DATA_DIR/dispersion.pkl
-# TODO: Set P as the number of pixels from the dispersion.
+# If there were input spectra that failed, then show a summary.
+_failed = []
+for result, input_path, output_path in normalized_result:
+    if result not in (True, None):
+        _failed.append(input_path)
 
+if _failed:
+    logger.info("Summary of failures ({}):".format(len(_failed)))
+    for input_path in _failed:
+        logger.info("\t{}".format(input_path))
+
+# Save the dispersion from one spectrum.
+for result, input_path, output_path in normalized_result:
+    if result in (True, None):
+        
+        with fits.open(input_path) as image:
+            dispersion = \
+                10**(image[0].header["CRVAL1"] + np.arange(image[0].data.size) \
+                        * image[0].data.header["CDELT1"])
+        
+        with open(os.path.join(CANNON_DATA_DIR, "dispersion.pkl"), "wb") as fp:
+            pickle.dump(dispersion, fp, PICKLE_PROTOCOL)
+
+        break
 
 #-------------------------------------------------------#
 # 2. Construct a training set from the stacked spectra. #
@@ -150,16 +172,18 @@ pool.join()
 clobber_model = True
 labelled_set = Table.read(LABELLED_SET_PATH)
 N = len(labelled_set)
-P = 8575
 
 with open(os.path.join(CANNON_DATA_DIR, "dispersion.pkl"), "rb") as fp:
     dispersion = pickle.load(fp)
+P = dispersion.size
 
 normalized_flux = np.zeros((N, P), dtype=float)
 normalized_ivar = np.zeros((N, P), dtype=float)
 
 for i, row in enumerate(labelled_set):
 
+    logger.info("Reading labelled set spectra ({}/{})".format(i + 1, N))
+    
     filename = os.path.join(
         CANNON_DATA_DIR, 
         row["TELESCOPE"],
@@ -208,7 +232,7 @@ with open(stacked_spectra_path, "w") as fp:
 
 logger.info(
     "The following command will perform the test step on all stacked spectra:"\
-    '\ttc fit "{model_filename}" --from-filename "{spectrum_list}" -t {threads}'\
+    'tc fit "{model_filename}" --from-filename "{spectrum_list}" -t {threads}'\
     .format(model_filename=model_filename, spectrum_list=stacked_spectra_path,
         threads=THREADS))
 
